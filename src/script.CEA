@@ -1,0 +1,228 @@
+[ENABLE]
+// Monsters vs. Aliens PC 1.0.0.1; v2: follow the game's active player handle.
+// F5 saves position. F9 requests restoration on the game thread.
+// Requests are processed when gameplay resumes if the game is paused.
+// Save slots are valid only for the same live character handle.
+
+assert(Game.exe+13A9C6,85 C0 74 38 8B 7D 10)
+assert(Game.exe+13A7BB,55 8B EC 83 E4 F8 83 EC 64)
+assert(GameLogic.dll+54CB0,55 8B EC 33 C0 75 FC 6A 00)
+alloc(mvaCoordinateCode,2048,Game.exe+13A9C6)
+label(mvaCoordinateReturn)
+label(mvaCoordinateNull)
+label(mvaCoordinateOriginal)
+label(mvaCheckLoad)
+label(mvaLoadNoSave)
+label(mvaLoadWrongCharacter)
+label(mvaCoordinateDone)
+label(mvaWrongRequest)
+label(mvaRequestHandle)
+label(mvaPlayer)
+label(mvaSaveRequest)
+label(mvaLoadRequest)
+label(mvaSavedValid)
+label(mvaSavedHandle)
+label(mvaSavedPosition)
+label(mvaCoordinateStatus)
+registersymbol(mvaPlayer)
+registersymbol(mvaSaveRequest)
+registersymbol(mvaLoadRequest)
+registersymbol(mvaSavedValid)
+registersymbol(mvaSavedHandle)
+registersymbol(mvaSavedPosition)
+registersymbol(mvaCoordinateStatus)
+registersymbol(mvaRequestHandle)
+
+mvaCoordinateCode:
+  test eax,eax
+  jz mvaCoordinateNull
+  // Player 0 is registered here by BOB, Missing Link/climbing and Susan levels.
+  // Compare the live unique handle, not an asset identifier or heap address.
+  push edx
+  mov edx,[GameLogic.dll+2F1F9C]
+  cmp [eax+1C],edx
+  pop edx
+  jne mvaCoordinateOriginal
+  pushfd
+  pushad
+  mov [mvaPlayer],eax
+  mov edx,[eax+1C]
+  cmp edx,[mvaRequestHandle]
+  jne mvaWrongRequest
+  cmp dword ptr [mvaSaveRequest],1
+  jne mvaCheckLoad
+  mov dword ptr [mvaSaveRequest],0
+  mov edx,[eax+50]
+  mov [mvaSavedPosition],edx
+  mov edx,[eax+54]
+  mov [mvaSavedPosition+4],edx
+  mov edx,[eax+58]
+  mov [mvaSavedPosition+8],edx
+  mov edx,[eax+1C]
+  mov [mvaSavedHandle],edx
+  mov dword ptr [mvaSavedValid],1
+  mov dword ptr [mvaCoordinateStatus],2
+mvaCheckLoad:
+  cmp dword ptr [mvaLoadRequest],1
+  jne mvaCoordinateDone
+  mov dword ptr [mvaLoadRequest],0
+  cmp dword ptr [mvaSavedValid],1
+  jne mvaLoadNoSave
+  mov edx,[eax+1C]
+  cmp edx,[mvaSavedHandle]
+  jne mvaLoadWrongCharacter
+  // Preserve the complete floating-point/SSE state around the engine call.
+  mov ebx,esp
+  sub esp,220
+  and esp,FFFFFFF0
+  fxsave [esp]
+  mov esi,esp
+  // Engine SetTransform(handle, context=null, forward=null, up=null, position).
+  push mvaSavedPosition
+  push 0
+  push 0
+  push 0
+  push edx
+  call Game.exe+13A7BB
+  add esp,14
+  fxrstor [esi]
+  mov esp,ebx
+  mov dword ptr [mvaCoordinateStatus],4
+  jmp mvaCoordinateDone
+mvaLoadNoSave:
+  mov dword ptr [mvaCoordinateStatus],6
+  jmp mvaCoordinateDone
+mvaLoadWrongCharacter:
+  mov dword ptr [mvaSavedValid],0
+  mov dword ptr [mvaCoordinateStatus],5
+  jmp mvaCoordinateDone
+mvaWrongRequest:
+  // Cancel requests queued for a character that has since changed.
+  cmp dword ptr [mvaSaveRequest],0
+  jne short @f
+  cmp dword ptr [mvaLoadRequest],0
+  je mvaCoordinateDone
+@@:
+  mov dword ptr [mvaSaveRequest],0
+  mov dword ptr [mvaLoadRequest],0
+  mov dword ptr [mvaCoordinateStatus],5
+mvaCoordinateDone:
+  popad
+  popfd
+mvaCoordinateOriginal:
+  // Reproduce the original test and instruction, including flags.
+  test eax,eax
+  mov edi,[ebp+10]
+  jmp mvaCoordinateReturn
+mvaCoordinateNull:
+  jmp Game.exe+13AA02
+
+align 10 CC
+mvaPlayer:
+  dd 0
+mvaSaveRequest:
+  dd 0
+mvaLoadRequest:
+  dd 0
+mvaSavedValid:
+  dd 0
+mvaSavedHandle:
+  dd 0
+mvaSavedPosition:
+  dd 0 0 0
+mvaCoordinateStatus:
+  dd 0
+mvaRequestHandle:
+  dd 0
+
+Game.exe+13A9C6:
+  jmp mvaCoordinateCode
+  nop 2
+mvaCoordinateReturn:
+
+{$lua}
+if syntaxcheck then return end
+if MVA_Coordinates then
+  if MVA_Coordinates.timer then MVA_Coordinates.timer.destroy() end
+  if MVA_Coordinates.saveKey then MVA_Coordinates.saveKey.destroy() end
+  if MVA_Coordinates.loadKey then MVA_Coordinates.loadKey.destroy() end
+end
+MVA_Coordinates = {}
+local state = MVA_Coordinates
+local function unsigned(v)
+  if v == nil then return nil end
+  return v % 0x100000000
+end
+local function resolvePlayer()
+  local slot = getAddressSafe('GameLogic.dll+2F1F9C')
+  local pool = getAddressSafe('Game.exe+43E7E4')
+  if not slot or not pool then return nil end
+  local handle = unsigned(readInteger(slot))
+  if not handle or math.floor(handle / 0x10000000) ~= 15 then return nil end
+  local index = math.floor((handle % 0x10000000) / 0x10000)
+  if index >= 0x800 then return nil end
+  local entry = pool + index * 8
+  if readInteger(entry) ~= handle % 0x10000 then return nil end
+  local player = unsigned(readInteger(entry + 4))
+  if not player or player == 0 then return nil end
+  if unsigned(readInteger(player + 0x1C)) ~= handle then return nil end
+  return player, handle
+end
+local function queueRequest(requestName, statusValue)
+  local player, handle = resolvePlayer()
+  if not player then
+    writeInteger('mvaCoordinateStatus', 7)
+    return
+  end
+  writeInteger('mvaRequestHandle', handle)
+  writeInteger('mvaCoordinateStatus', statusValue)
+  writeInteger(requestName, 1)
+end
+state.saveKey = createHotkey(function()
+  queueRequest('mvaSaveRequest', 1)
+end, VK_F5)
+state.loadKey = createHotkey(function()
+  queueRequest('mvaLoadRequest', 3)
+end, VK_F9)
+-- Keep displayed coordinates valid even when the actor is not requesting
+-- a transform (for example while paused); reject recycled object slots.
+state.timer = createTimer(nil, false)
+state.timer.Interval = 250
+state.timer.OnTimer = function()
+  if not getAddressSafe('mvaPlayer') then return end
+  local player, handle = resolvePlayer()
+  local current = handle or 0
+  writeInteger('mvaPlayer', player or 0)
+  if state.handle ~= nil and state.handle ~= current then
+    writeInteger('mvaSaveRequest', 0)
+    writeInteger('mvaLoadRequest', 0)
+    local hadSave = readInteger('mvaSavedValid') == 1
+    writeInteger('mvaSavedValid', 0)
+    writeInteger('mvaCoordinateStatus', hadSave and 5 or (player and 0 or 7))
+  end
+  state.handle = current
+end
+state.timer.Enabled = true
+{$asm}
+
+[DISABLE]
+{$lua}
+if syntaxcheck then return end
+if MVA_Coordinates then
+  if MVA_Coordinates.timer then MVA_Coordinates.timer.destroy() end
+  if MVA_Coordinates.saveKey then MVA_Coordinates.saveKey.destroy() end
+  if MVA_Coordinates.loadKey then MVA_Coordinates.loadKey.destroy() end
+  MVA_Coordinates = nil
+end
+{$asm}
+Game.exe+13A9C6:
+  db 85 C0 74 38 8B 7D 10
+unregistersymbol(mvaPlayer)
+unregistersymbol(mvaSaveRequest)
+unregistersymbol(mvaLoadRequest)
+unregistersymbol(mvaSavedValid)
+unregistersymbol(mvaSavedHandle)
+unregistersymbol(mvaSavedPosition)
+unregistersymbol(mvaCoordinateStatus)
+unregistersymbol(mvaRequestHandle)
+dealloc(mvaCoordinateCode)
