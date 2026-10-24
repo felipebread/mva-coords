@@ -14,10 +14,6 @@ This table targets the ViTALiTY NoCD executable, MD5 31F3...
 
 There is one temporary save slot. Save again after changing levels or characters. If the game is paused, save/load requests take effect when gameplay resumes. Disable older versions of the coordinates script before enabling this one.
 
-AI Disclaimer
-
-Reported Engagement with AI Level
-
 ### AI Disclaimer
 <sup><sub>Reported Engagement with AI Level</sub></sup>
 
